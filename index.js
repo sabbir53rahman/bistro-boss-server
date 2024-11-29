@@ -3,7 +3,7 @@ const app = express();
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -15,9 +15,7 @@ app.use(express.json());
 const verifyJWT = (req, res, next) => {
   const authorization = req.headers.authorization;
   if (!authorization) {
-    return res
-      .status(401)
-      .send({ error: true, message: "Unauthorized access" });
+    return res.status(401).send({ error: true, message: "Unauthorized access" });
   }
 
   const token = authorization.split(" ")[1];
@@ -52,6 +50,7 @@ async function run() {
     const menuCollection = db.collection("menu");
     const cartCollection = db.collection("cart");
     const usersCollection = db.collection("users");
+    const paymentCollection = db.collection("payments");
 
     // JWT token generation
     app.post("/jwt", (req, res) => {
@@ -101,35 +100,7 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/menu/:id", verifyJWT, async (req, res) => {
-      const id = req.params.id;
-
-      // Check if the ID is a valid ObjectId
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ error: true, message: "Invalid ID" });
-      }
-
-      try {
-        const result = await menuCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-        if (result.deletedCount === 0) {
-          return res
-            .status(404)
-            .send({ error: true, message: "Item not found" });
-        }
-        res.send({
-          success: true,
-          message: "Item deleted successfully",
-          result,
-        });
-      } catch (error) {
-        console.error("Error deleting item:", error);
-        res.status(500).send({ error: true, message: "Server error" });
-      }
-    });
-
-    // Fetch menu items
+    // Menu endpoints
     app.get("/menu", async (req, res) => {
       const menuItems = await menuCollection.find().toArray();
       res.send(menuItems);
@@ -168,45 +139,62 @@ async function run() {
 
     app.get("/cart/:email", verifyJWT, async (req, res) => {
       const email = req.params.email;
-      if (req.decoded.email !== email) {
-        return res
-          .status(403)
-          .send({ error: true, message: "Forbidden access" });
-      }
-      const cartItems = await cartCollection.find({ email }).toArray();
-      res.send(cartItems);
+      const items = await cartCollection.find({ email }).toArray();
+      res.send(items);
     });
 
-    //payment intent 
-    app.post('/create-payment-intent', async (req, res)=>{
-      const { price } = req.body;
-       const amount = parseInt(price * 100);
-       
-       const paymentIntent = await stripe.paymentIntents.create({
-        amount: amount,
-        currency: 'usd',
-        payment_method_types: ['card']
-       })
+    // Stripe payment endpoint
+    app.post("/create-payment-intent", verifyJWT, async (req, res) => {
+      const { amount } = req.body;
 
-       res.send({
-        clientSecret: paymentIntent.client_secret
-       })
+      // Ensure the amount is provided and in the smallest currency unit (e.g., cents for USD)
+      if (!amount || amount < 50) {
+        return res.status(400).send({
+          error: true,
+          message:
+            "Amount must be at least the minimum chargeable amount (e.g., 50 cents for USD).",
+        });
+      }
+
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount, // Amount in the smallest currency unit
+          currency: "usd",
+          payment_method_types: ["card"],
+        });
+
+        res.send({
+          clientSecret: paymentIntent.client_secret,
+        });
+      } catch (error) {
+        console.error("Error creating payment intent:", error);
+        res.status(500).send({
+          error: true,
+          message: "An error occurred while processing the payment.",
+        });
+      }
+    });
+
+    app.post('/payments', async(req, res) =>{
+      const payment = req.body;
+      const paymentResult = await paymentCollection.insertOne(payment);
+
+      // carefully delete each item from the cart
+      console.log('payment info', payment);
+      const query = {_id:{
+        $in: payment.cartIds.map(id => new ObjectId(id))
+      }}
+      const deleteResult = await cartCollection.deleteMany(query);
+
+      res.send({paymentResult, deleteResult})
     })
 
-    // Verify connection
-    await client.db("admin").command({ ping: 1 });
-    console.log("Successfully connected to MongoDB!");
+    app.listen(port, () => {
+      console.log(`Server running on port ${port}`);
+    });
   } finally {
-    // Keep client open
+    // Do not close the client to allow reuse across multiple requests
   }
 }
 
 run().catch(console.dir);
-
-app.get("/", (req, res) => {
-  res.send("Server is running");
-});
-
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
-});
