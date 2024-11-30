@@ -175,19 +175,38 @@ async function run() {
       }
     });
 
-    app.post('/payments', async(req, res) =>{
-      const payment = req.body;
-      const paymentResult = await paymentCollection.insertOne(payment);
-
-      // carefully delete each item from the cart
-      console.log('payment info', payment);
-      const query = {_id:{
-        $in: payment.cartIds.map(id => new ObjectId(id))
-      }}
-      const deleteResult = await cartCollection.deleteMany(query);
-
-      res.send({paymentResult, deleteResult})
+    app.get('/payments/:email', verifyJWT, async (req, res)=>{
+      const query = {email: req.params.email}
+      if (req.params.email !== req.decoded.email) {
+        return res.status(403).send({message: 'forbidden access'})
+      }
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result)
     })
+
+    app.post('/payments', async (req, res) => {
+      try {
+        const payment = req.body;
+    
+        // Insert payment into the database
+        const paymentResult = await paymentCollection.insertOne(payment);
+    
+        // Delete items from the cart
+        const query = {
+          _id: {
+            $in: payment.cartIds.map(id => new ObjectId(id))
+          }
+        };
+        const deleteResult = await cartCollection.deleteMany(query);
+    
+        // Respond with success
+        res.status(200).send({ success: true, paymentResult, deleteResult });
+      } catch (error) {
+        console.error("Error processing payment:", error);
+        res.status(500).send({ success: false, message: "Failed to process payment." });
+      }
+    });
+    
 
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);
